@@ -1,19 +1,14 @@
 use clap::{Parser, Subcommand};
 use reqwest::Client;
-use std::{
-    env,
-    process::Command as StdCommand,
-    time::Duration,
-};
-use tokio::{
-    process::Command as TokioCommand,
-    process::Child,
-    time::sleep,
-    task,
-};
+use spinners::{Spinner, Spinners};
+use std::{env, process::Command as StdCommand, time::Duration};
+use tokio::{process::Child, process::Command as TokioCommand, task, time::sleep};
 
 #[derive(Parser)]
-#[command(name = "Process Monitor", about = "Monitor processes by PID, name, or execute commands.")]
+#[command(
+    name = "Process Monitor",
+    about = "Monitor processes by PID, name, or execute commands."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -22,23 +17,18 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Monitor a process by PID
-    Pid {
-        pid: u32,
-    },
+    Pid { pid: u32 },
     /// Monitor a process by name
-    Name {
-        process_name: String,
-    },
+    Name { process_name: String },
     /// Execute a command and monitor it
-    Exec {
-        command: String,
-    },
+    Exec { command: String },
 }
 
 async fn send_telegram_message(bot_token: &str, chat_id: &str, message: &str) {
     let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
     let client = Client::new();
-    if let Err(e) = client.post(&url)
+    if let Err(e) = client
+        .post(&url)
         .form(&[("chat_id", chat_id), ("text", message)])
         .send()
         .await
@@ -60,8 +50,15 @@ async fn monitor_process(mut child: Child) {
     }
 }
 
-async fn monitor_process_by_pid(pid: u32) {
+async fn monitor_process_by_pid(pid: u32, is_silent: Option<bool>) {
     let wait_time = Duration::from_secs(1);
+    let is_silent = is_silent.unwrap_or(false);
+    let mut sp = if is_silent {
+        None
+    } else {
+        Some(Spinner::new(Spinners::Moon, format!("Monitoring PID: {}", pid)))
+    };
+
     loop {
         let status = StdCommand::new("ps")
             .arg("-p")
@@ -72,6 +69,9 @@ async fn monitor_process_by_pid(pid: u32) {
                 sleep(wait_time).await;
             }
             _ => {
+                if let Some(ref mut spinner) = sp {
+                    spinner.stop();
+                }
                 println!("Process with PID {} has terminated.", pid);
                 break;
             }
@@ -81,6 +81,10 @@ async fn monitor_process_by_pid(pid: u32) {
 
 async fn monitor_process_by_name(process_name: &str) {
     let wait_time = Duration::from_secs(1);
+    let mut sp = Spinner::new(
+        Spinners::Moon,
+        format!("Monitoring processes named: {}", process_name),
+    );
     loop {
         let status = StdCommand::new("pgrep").arg(process_name).output();
         match status {
@@ -91,17 +95,18 @@ async fn monitor_process_by_name(process_name: &str) {
                     .filter_map(|line| line.trim().parse::<u32>().ok())
                     .collect();
                 if pids.is_empty() {
-                    println!("All processes named '{}' have terminated.", process_name);
+                    sp.stop();
+                    println!("\nAll processes named '{}' have terminated.", process_name);
                     break;
                 } else {
-                    println!("Monitoring PIDs: {:?}", pids);
                     for pid in pids {
-                        let _ = task::spawn(monitor_process_by_pid(pid));
+                        let _ = task::spawn(monitor_process_by_pid(pid, Some(true)));
                     }
                 }
             }
             Err(_) => {
-                println!("Error retrieving process list.");
+                sp.stop();
+                println!("\nError retrieving process list.");
                 break;
             }
         }
@@ -128,22 +133,52 @@ async fn main() {
 
     match cli.command {
         Commands::Pid { pid } => {
-            send_telegram_message(&bot_token, &chat_id, &format!("Starting to monitor PID: {}", pid)).await;
-            monitor_process_by_pid(pid).await;
-            send_telegram_message(&bot_token, &chat_id, &format!("Process {} has finished.", pid)).await;
+            send_telegram_message(
+                &bot_token,
+                &chat_id,
+                &format!("Starting to monitor PID: {}", pid),
+            )
+            .await;
+            monitor_process_by_pid(pid, None).await;
+            send_telegram_message(
+                &bot_token,
+                &chat_id,
+                &format!("Process {} has finished.", pid),
+            )
+            .await;
         }
         Commands::Name { process_name } => {
-            send_telegram_message(&bot_token, &chat_id, &format!("Monitoring processes named: {}", process_name)).await;
+            send_telegram_message(
+                &bot_token,
+                &chat_id,
+                &format!("Monitoring processes named: {}", process_name),
+            )
+            .await;
             monitor_process_by_name(&process_name).await;
-            send_telegram_message(&bot_token, &chat_id, &format!("Processes '{}' have finished.", process_name)).await;
+            send_telegram_message(
+                &bot_token,
+                &chat_id,
+                &format!("Processes '{}' have finished.", process_name),
+            )
+            .await;
         }
         Commands::Exec { command } => {
-            send_telegram_message(&bot_token, &chat_id, &format!("Starting command: '{}'", command)).await;
+            send_telegram_message(
+                &bot_token,
+                &chat_id,
+                &format!("Starting command: '{}'", command),
+            )
+            .await;
             match execute_and_monitor_command(&command).await {
                 Ok(child) => {
                     let monitor_task = task::spawn(monitor_process(child));
                     monitor_task.await.unwrap();
-                    send_telegram_message(&bot_token, &chat_id, &format!("Command '{}' has finished.", command)).await;
+                    send_telegram_message(
+                        &bot_token,
+                        &chat_id,
+                        &format!("Command '{}' has finished.", command),
+                    )
+                    .await;
                 }
                 Err(e) => {
                     eprintln!("Failed to execute command: {}", e);
