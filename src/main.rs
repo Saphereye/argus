@@ -60,8 +60,7 @@ async fn monitor_process_by_pid(pid: u32, is_silent: Option<bool>) {
     };
 
     loop {
-        let status = StdCommand::new("ps")
-            .arg("-p")
+        let status = StdCommand::new("pgrep ")
             .arg(pid.to_string())
             .output();
         match status {
@@ -72,7 +71,7 @@ async fn monitor_process_by_pid(pid: u32, is_silent: Option<bool>) {
                 if let Some(ref mut spinner) = sp {
                     spinner.stop();
                 }
-                println!("Process with PID {} has terminated.", pid);
+                println!("\nProcess with PID {} has terminated.", pid);
                 break;
             }
         }
